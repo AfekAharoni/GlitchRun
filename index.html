@@ -1448,20 +1448,18 @@ function buildLevel(mapKey) {
       }
       x += pw + 220 + Math.random() * 80;
     } else if (roll < 0.72) {
-      // Obstacle(s): single or paired of same type
+      // Single obstacle only — pairs cause AI jump-cooldown deaths
       const t = randObstacle();
       const size = OBSTACLE_SIZES[t];
-      const count = (Math.random() < 0.2 && size.w < 60) ? 2 : 1;
-      for (let i = 0; i < count; i++) {
-        obstacles.push({
-          type: t,
-          x: x + i * (size.w + 10),
-          y: GROUND_Y - size.h,
-          w: size.w, h: size.h,
-          phase: Math.random() * Math.PI * 2,
-        });
-      }
-      x += (size.w + 10) * count + 240 + Math.random() * 140;
+      obstacles.push({
+        type: t,
+        x,
+        y: GROUND_Y - size.h,
+        w: size.w, h: size.h,
+        phase: Math.random() * Math.PI * 2,
+      });
+      // Minimum spacing of 320px so bots can finish a jump arc + cooldown
+      x += size.w + 320 + Math.random() * 140;
     } else {
       boxes.push({ x, y: GROUND_Y - 110 - Math.random() * 30, size: 36, taken: false, bob: Math.random() * Math.PI * 2, type: randPowerup() });
       x += 300 + Math.random() * 140;
@@ -1538,6 +1536,111 @@ let state = {
   playerName: 'PLAYER',
 };
 
+// ---------- Audio (procedural, no assets) ----------
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+    } catch (e) { return null; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+function playTone({ freq, dur, type = 'sine', volume = 0.12, slide = 0, delay = 0 }) {
+  const ac = getAudio(); if (!ac) return;
+  const t = ac.currentTime + delay;
+  const osc = ac.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t);
+  if (slide) {
+    const target = Math.max(10, freq + slide);
+    osc.frequency.exponentialRampToValueAtTime(target, t + dur);
+  }
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(volume, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.connect(g).connect(ac.destination);
+  osc.start(t);
+  osc.stop(t + dur + 0.05);
+}
+function playNoise({ dur, volume = 0.1, filterFreq = 1000, filterType = 'lowpass', delay = 0 }) {
+  const ac = getAudio(); if (!ac) return;
+  const t = ac.currentTime + delay;
+  const bufSize = Math.max(1, Math.floor(ac.sampleRate * dur));
+  const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = filterType;
+  filter.frequency.setValueAtTime(filterFreq, t);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(volume, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(filter).connect(g).connect(ac.destination);
+  src.start(t);
+  src.stop(t + dur + 0.05);
+}
+const SFX = {
+  pickup() {
+    playTone({ freq: 523, dur: 0.08, type: 'triangle', volume: 0.14 });
+    playTone({ freq: 784, dur: 0.08, type: 'triangle', volume: 0.14, delay: 0.07 });
+    playTone({ freq: 1047, dur: 0.14, type: 'triangle', volume: 0.14, delay: 0.14 });
+  },
+  LIGHTNING() {
+    // Crack: broadband burst + descending zap + rumble
+    playNoise({ dur: 0.35, volume: 0.22, filterFreq: 3800, filterType: 'bandpass' });
+    playTone({ freq: 1500, slide: -1400, dur: 0.4, type: 'sawtooth', volume: 0.12 });
+    playTone({ freq: 320, slide: -220, dur: 0.6, type: 'triangle', volume: 0.1, delay: 0.1 });
+    playNoise({ dur: 0.25, volume: 0.1, filterFreq: 180, filterType: 'lowpass', delay: 0.3 });
+  },
+  MAGNET() {
+    // Humming warble that rises
+    playTone({ freq: 110, slide: 420, dur: 0.55, type: 'sawtooth', volume: 0.12 });
+    playTone({ freq: 220, slide: 640, dur: 0.55, type: 'sine', volume: 0.08, delay: 0.03 });
+    playTone({ freq: 55, slide: 220, dur: 0.5, type: 'square', volume: 0.06, delay: 0.08 });
+  },
+  SPIKE_TRAP() {
+    // Metallic clatter + thud
+    playNoise({ dur: 0.08, volume: 0.16, filterFreq: 3000, filterType: 'highpass' });
+    playTone({ freq: 220, slide: -150, dur: 0.15, type: 'square', volume: 0.1 });
+    playTone({ freq: 90, dur: 0.15, type: 'sine', volume: 0.1, delay: 0.08 });
+  },
+  ROCKET() {
+    // Low whoosh rising
+    playNoise({ dur: 0.9, volume: 0.18, filterFreq: 600, filterType: 'lowpass' });
+    playTone({ freq: 90, slide: 450, dur: 0.9, type: 'sawtooth', volume: 0.1 });
+    playTone({ freq: 180, dur: 0.35, type: 'square', volume: 0.08 });
+  },
+  BOXING_GLOVE() {
+    // Fast swish + punch
+    playNoise({ dur: 0.1, volume: 0.2, filterFreq: 900, filterType: 'bandpass' });
+    playTone({ freq: 320, slide: -220, dur: 0.1, type: 'sine', volume: 0.1 });
+  },
+  jump() {
+    playTone({ freq: 380, slide: 300, dur: 0.08, type: 'sine', volume: 0.08 });
+  },
+  hit() {
+    playNoise({ dur: 0.1, volume: 0.15, filterFreq: 420, filterType: 'lowpass' });
+    playTone({ freq: 95, dur: 0.1, type: 'sawtooth', volume: 0.1 });
+  },
+  impact() {
+    playTone({ freq: 100, dur: 0.15, type: 'sine', volume: 0.15 });
+    playNoise({ dur: 0.1, volume: 0.1, filterFreq: 1500, filterType: 'bandpass' });
+  },
+  finish() {
+    playTone({ freq: 523, dur: 0.2, type: 'triangle', volume: 0.12 });
+    playTone({ freq: 659, dur: 0.2, type: 'triangle', volume: 0.12, delay: 0.1 });
+    playTone({ freq: 784, dur: 0.3, type: 'triangle', volume: 0.12, delay: 0.2 });
+    playTone({ freq: 1047, dur: 0.6, type: 'triangle', volume: 0.14, delay: 0.3 });
+  },
+};
+
 // ---------- Powerups (Fun Run style) ----------
 const POWERUPS = ['LIGHTNING', 'SPIKE_TRAP', 'MAGNET', 'ROCKET', 'BOXING_GLOVE'];
 const POWERUP_LABELS = {
@@ -1592,7 +1695,7 @@ function updateHUDPowerup(type) {
 function pickupPowerup(user, type) {
   if (user.heldPowerup) return false;
   user.heldPowerup = type;
-  if (user.isPlayer) updateHUDPowerup(type);
+  if (user.isPlayer) { updateHUDPowerup(type); SFX.pickup(); }
   else user.aiPowerupUseAt = performance.now() + 300 + Math.random() * 1400;
   return true;
 }
@@ -1614,6 +1717,7 @@ function triggerPowerup(user, forcedType) {
   user.currentPowerup = label;
   const opponents = state.runners.filter(r => r !== user && !r.finished);
   flashEffect(user.isPlayer ? (label + '!') : (user.name + ' → ' + label), color, icon);
+  if (SFX[type]) SFX[type]();
   switch (type) {
     case 'LIGHTNING':
       opponents.forEach(o => {
@@ -1690,6 +1794,7 @@ function tryJump(r) {
     r.vy = r.flipped ? -JUMP_V : JUMP_V;
     r.onGround = false;
     r.jumping = true;
+    if (r.isPlayer) SFX.jump();
   }
 }
 
@@ -1833,6 +1938,10 @@ function updateRunner(r, dt, now) {
   for (const o of state.obstacles) {
     if (r.flipped) continue;
     if (rectsOverlap(r.x + 8, r.y + 12, r.w - 16, r.h - 16, o.x + 6, o.y + 6, o.w - 12, o.h - 10)) {
+      if (!r.obstacleHitUntil || now > r.obstacleHitUntil) {
+        if (r.isPlayer) SFX.hit();
+        r.obstacleHitUntil = now + 600;
+      }
       r.x = Math.max(60, r.x - 60);
       r.vy = Math.min(r.vy, -5);
       r.slowUntil = Math.max(r.slowUntil, now + 600);
@@ -1866,6 +1975,7 @@ function updateRunner(r, dt, now) {
       r.x = Math.max(30, r.x - 60);
       r.vy = Math.min(r.vy, -6);
       emitParticles(tr.x + tr.w / 2, tr.y, '#ff8a3b', 10);
+      if (r.isPlayer) SFX.impact();
     }
   }
 
@@ -1878,6 +1988,7 @@ function updateRunner(r, dt, now) {
       r.x = Math.max(30, r.x - 80);
       r.vy = -8;
       emitParticles(p.x, p.y, '#ff2bd6', 14);
+      if (r.isPlayer) SFX.impact();
     }
   }
 
@@ -3127,6 +3238,7 @@ function showResults() {
   renderPodChar('podChar3', third);
   // Confetti only if the player won
   spawnConfetti(document.getElementById('confetti'), place === 1 ? 90 : 40);
+  SFX.finish();
   show(screenResults);
 }
 
